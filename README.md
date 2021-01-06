@@ -3,18 +3,22 @@
 ## 前言
 
 [speedy](https://gitlab.com/AngryTester/speedy)是基于Selenium Grid+Docker的自动化测试框架，之前一直是将Grid集群中在公司的私有云平台上。虽然之前也用docker-compose搭建过Grid集群，但是并没有考虑多节点横向扩展的能力，而这恰恰就是K8S的强项。正好最近有一个微服务项目应用到K8S，借此机会学习了一把K8S的搭建和简单使用，正好拿Grid集群的搭建作为例子，在此做个记录。
-
+参考： https://www.bladewan.com/2018/01/02/kubernetes_install/
 ### 搭建
 
 > 环境准备
 
 通过VirtualBox准备了三台centos，分别为：
 ```
-172.26.X.60-master
+192.168.5.101-master1
 
-172.26.X.61-minion1
+192.168.5.102-minion2
 
-172.26.X.62-minion2
+192.168.5.103-minion3
+
+192.168.5.104-minion4
+
+192.168.5.105-master
 ```
 虚拟机镜像选择`CentOS-7-x86_64-Minimal-1804.iso`
 
@@ -32,9 +36,12 @@ yum update -y
 分别执行：
 
 ```
-echo -e "172.26.X.60 master\n\
-172.26.X.61 minion1\n\
-172.26.X.62 minion2" >> /etc/hosts
+echo -e "192.168.5.101 minion1\n\
+192.168.5.102 minion2\n\
+192.168.5.103 minion3\n\
+192.168.5.104 minion4\n\
+192.168.5.105 master" >> /etc/hosts
+
 ```
 
 #### 3.关闭防火墙和selinux
@@ -94,7 +101,7 @@ cat ~/.ssh/id_rsa.pub > ~/.ssh/authorized_keys
 ```
 master上执行：
 ```
-ssh-copy-id minion1&&ssh-copy-id minion2
+ssh-copy-id minion1&&ssh-copy-id minion2&&ssh-copy-id minion3&&ssh-copy-id minion4
 ```
 
 minion上分别执行：
@@ -136,6 +143,20 @@ systemctl start docker
  ```
 
 #### 8.导入kubeadm、kubelet、kubectl
+
+配置 k8s 源：
+
+```
+cat >> /etc/yum.repos.d/kubernetes.repo <<EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+enabled=1
+gpgcheck=0
+priority=2
+EOF
+
+```
 
 可手动下载离线安装包：
 ```
