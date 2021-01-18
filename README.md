@@ -4,6 +4,7 @@
 
 [speedy](https://gitlab.com/AngryTester/speedy)是基于Selenium Grid+Docker的自动化测试框架，之前一直是将Grid集群中在公司的私有云平台上。虽然之前也用docker-compose搭建过Grid集群，但是并没有考虑多节点横向扩展的能力，而这恰恰就是K8S的强项。正好最近有一个微服务项目应用到K8S，借此机会学习了一把K8S的搭建和简单使用，正好拿Grid集群的搭建作为例子，在此做个记录。
 参考： https://www.bladewan.com/2018/01/02/kubernetes_install/
+https://juejin.cn/post/6844904072240168973  
 ### 搭建
 
 > 环境准备
@@ -36,11 +37,9 @@ yum update -y
 分别执行：
 
 ```
-echo -e "192.168.5.101 minion1\n\
-192.168.5.102 minion2\n\
-192.168.5.103 minion3\n\
-192.168.5.104 minion4\n\
-192.168.5.105 master" >> /etc/hosts
+echo -e "192.168.5.140 minion1\n\
+192.168.5.106 minion2\n\
+192.168.5.191 master" >> /etc/hosts
 
 ```
 
@@ -61,8 +60,11 @@ sed -i "s/SELINUX=enforcing/SELINUX=disabled/g" /etc/selinux/config
 
 ```
 echo "net.bridge.bridge-nf-call-ip6tables = 1" >> /etc/sysctl.d/k8s.conf
+
 echo "net.bridge.bridge-nf-call-iptables = 1" >> /etc/sysctl.d/k8s.conf
+
 echo "#关闭需虚拟内存"
+
 echo "vm.swappiness=0" >> /etc/sysctl.d/k8s.conf
 sysctl -p /etc/sysctl.d/k8s.conf
 ```
@@ -101,7 +103,7 @@ cat ~/.ssh/id_rsa.pub > ~/.ssh/authorized_keys
 ```
 master上执行：
 ```
-ssh-copy-id minion1&&ssh-copy-id minion2&&ssh-copy-id minion3&&ssh-copy-id minion4
+ssh-copy-id minion1&&ssh-copy-id minion2&&ssh-copy-id 
 ```
 
 minion上分别执行：
@@ -147,14 +149,24 @@ systemctl start docker
 配置 k8s 源：
 
 ```
-cat >> /etc/yum.repos.d/kubernetes.repo <<EOF
+cat <<EOF > /etc/yum.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
-baseurl=https://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64/
+baseurl=http://mirrors.aliyun.com/kubernetes/yum/repos/kubernetes-el7-x86_64
 enabled=1
 gpgcheck=0
-priority=2
+repo_gpgcheck=0
+gpgkey=http://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg
+ http://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
 EOF
+
+# 将 SELinux 设置为 permissive 模式（相当于将其禁用）
+setenforce 0
+sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
+
+ yum install -y kubelet-1.19.3 kubeadm-1.19.3 kubectl-1.19.3 --disableexcludes=kubernetes
+
+systemctl enable --now kubelet
 
 ```
 
@@ -178,11 +190,11 @@ flannel-0.9.1-amd64.tar
 k8s-dns-dnsmasq-nanny-amd64_v1.14.7.tar 
 k8s-dns-kube-dns-amd64_1.14.7.tar
 k8s-dns-sidecar-amd64_1.14.7.tar
-kube-apiserver-amd64_v1.9.6.tar
-kube-controller-manager-amd64_v1.9.6.tar
-kube-proxy-amd64_v1.9.6.tar
+kube-apiserver-amd64_v1.19.3.tar
+kube-controller-manager-amd64_v1.19.3.tar
+kube-proxy-amd64_v1.19.3.tar
 kubernetes-dashboard-amd64_v1.8.3.tar
-kube-scheduler-amd64_v1.9.6.tar
+kube-scheduler-amd64_v1.19.3.tar
 pause-amd64_3.0.tar
 hub.tar
 chrome.tar
@@ -197,16 +209,18 @@ flannel-0.9.1-amd64.tar
 k8s-dns-dnsmasq-nanny-amd64_v1.14.7.tar 
 k8s-dns-kube-dns-amd64_1.14.7.tar
 k8s-dns-sidecar-amd64_1.14.7.tar
-kube-apiserver-amd64_v1.9.6.tar
-kube-controller-manager-amd64_v1.9.6.tar
-kube-proxy-amd64_v1.9.6.tar
+kube-apiserver-amd64_v1.19.3.tar
+kube-controller-manager-amd64_v1.19.3.tar
+kube-proxy-amd64_v1.19.3.tar
 kubernetes-dashboard-amd64_v1.8.3.tar
-kube-scheduler-amd64_v1.9.6.tar
+kube-scheduler-amd64_v1.19.3.tar
 pause-amd64_3.0.tar
 hub.tar
 chrome.tar
 registry.tar
 ```
+
+
 
 在镜像文件目录执行：
 
@@ -218,10 +232,10 @@ registry                                                     latest             
 registry.gitlab.com/angrytester/selenium-hub                 3.4                 13febb5e0aa9        2 months ago        293 MB
 registry.gitlab.com/angrytester/selenium-node-chrome-debug   3.4                 ea211cd77500        2 months ago        989 MB
 busybox                                                      latest              8c811b4aec35        2 months ago        1.15 MB
-gcr.io/google_containers/kube-controller-manager-amd64       v1.9.6              472b6fcfe871        4 months ago        139 MB
-gcr.io/google_containers/kube-apiserver-amd64                v1.9.6              a5c066e8c9bf        4 months ago        212 MB
-gcr.io/google_containers/kube-proxy-amd64                    v1.9.6              70e63dd90b80        4 months ago        109 MB
-gcr.io/google_containers/kube-scheduler-amd64                v1.9.6              25d7b2c6f653        4 months ago        62.9 MB
+gcr.io/google_containers/kube-controller-manager-amd64       v1.19.3              472b6fcfe871        4 months ago        139 MB
+gcr.io/google_containers/kube-apiserver-amd64                v1.19.3              a5c066e8c9bf        4 months ago        212 MB
+gcr.io/google_containers/kube-proxy-amd64                    v1.19.3              70e63dd90b80        4 months ago        109 MB
+gcr.io/google_containers/kube-scheduler-amd64                v1.19.3              25d7b2c6f653        4 months ago        62.9 MB
 gcr.io/google_containers/kubernetes-dashboard-amd64          v1.8.3              0c60bcf89900        5 months ago        102 MB
 gcr.io/google_containers/etcd-amd64                          3.1.11              59d36f27cceb        8 months ago        194 MB
 quay.io/coreos/flannel                                       v0.9.1-amd64        2b736d06ca4c        8 months ago        51.3 MB
@@ -230,6 +244,34 @@ gcr.io/google_containers/k8s-dns-kube-dns-amd64              1.14.7             
 gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64         1.14.7              5feec37454f4        9 months ago        40.9 MB
 gcr.io/google_containers/pause-amd64                         3.0                 99e59f495ffa        2 years ago         747 kB
 ```
+
+master 上安装  
+在镜像文件目录新建文件`images—master.txt`,文件内容如下:
+```
+k8s.gcr.io/kube-apiserver:v1.19.3
+k8s.gcr.io/kube-controller-manager:v1.19.3
+k8s.gcr.io/kube-scheduler:v1.19.3
+k8s.gcr.io/kube-proxy:v1.19.3
+k8s.gcr.io/pause
+
+
+```
+在镜像文件目录新建文件`images-work.txt`,文件内容如下:
+```
+k8s.gcr.io/kube-proxy:v1.19.3
+k8s.gcr.io/pause
+
+
+```
+
+在镜像文件目录执行：
+
+```
+for i in `cat images-master(work).txt ` ; do docker pull  < `echo $i` ; done
+# docker images
+````
+
+
 
 #### 10.搭建本地镜像仓库
 
@@ -263,13 +305,14 @@ docker push 172.26.X.60:5000/pause-amd64:3.0
 由于docker默认的隔离方式为cgroup,而k8s默认的是systemd,需要改为一致
 
 ```
-sed -i 's/systemd/cgroupfs/g' /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+sed -i 's/systemd/cgroupfs/g' /usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf
+
 ```
 
 
 ```
-echo Environment=\"KUBELET_SWAP_ARGS=--fail-swap-on=false\" >> /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
-echo Environment=\"KUBELET_INFRA_IMAGE=--pod-infra-container-image=172.26.X.60:5000/pause-amd64:3.0\" >> /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+echo Environment=\"KUBELET_SWAP_ARGS=--fail-swap-on=false\" >> /usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf
+echo Environment=\"KUBELET_INFRA_IMAGE=--pod-infra-container-image=k8s.gcr.io/pause\" >> /usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf
 ```
 
 #### 13.启动K8S
@@ -278,14 +321,15 @@ echo Environment=\"KUBELET_INFRA_IMAGE=--pod-infra-container-image=172.26.X.60:5
 
 ```
 systemctl daemon-reload
-systemctl enable kubelet.service
-systemctl start kubelet.service
+systemctl enable kubelet
+systemctl start kubelet
 ```
 
 ### 初始化集群
 
 ```
-kubeadm init --kubernetes-version=v1.9.6 --pod-network-cidr=10.244.0.0/16 --token-ttl=0
+kubeadm init --kubernetes-version=v1.19.3 --pod-network-cidr=10.244.0.0/16 --token-ttl=0
+kubeadm init --kubernetes-version=v1.19.3  --token-ttl=0
 ```
 
 `--token-ttl=0`表示token永不过期
