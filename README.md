@@ -5,9 +5,9 @@
 [speedy](https://gitlab.com/AngryTester/speedy)是基于Selenium Grid+Docker的自动化测试框架，之前一直是将Grid集群中在公司的私有云平台上。虽然之前也用docker-compose搭建过Grid集群，但是并没有考虑多节点横向扩展的能力，而这恰恰就是K8S的强项。正好最近有一个微服务项目应用到K8S，借此机会学习了一把K8S的搭建和简单使用，正好拿Grid集群的搭建作为例子，在此做个记录。
 参考： https://www.bladewan.com/2018/01/02/kubernetes_install/
 https://juejin.cn/post/6844904072240168973  
-### 搭建
+## 搭建
 
-> 环境准备
+### > 1.环境准备
 
 通过VirtualBox准备了三台centos，分别为：
 ```
@@ -15,16 +15,12 @@ https://juejin.cn/post/6844904072240168973
 
 192.168.5.102-minion2
 
-192.168.5.103-minion3
-
-192.168.5.104-minion4
-
 192.168.5.105-master
 ```
 虚拟机镜像选择`CentOS-7-x86_64-Minimal-1804.iso`
 
 
-#### 1.虚拟机启动之后更新yum源
+### 1.1虚拟机启动之后更新yum源
 
 分别执行：
 
@@ -32,7 +28,7 @@ https://juejin.cn/post/6844904072240168973
 yum update -y
 ```
 
-#### 2.配置三台服务器的Host
+### 1.2配置三台服务器的Host
 
 分别执行：
 
@@ -43,33 +39,33 @@ echo -e "192.168.5.140 minion1\n\
 
 ```
 
-#### 3.关闭防火墙和selinux
+#### 1.3.关闭防火墙和SELINUX
 
 分别执行：
-
 ```
-# 关闭防火墙
 systemctl stop firewalld
 systemctl disable firewalld
 
-# 关闭selinux
-sed -i "s/SELINUX=enforcing/SELINUX=disabled/g" /etc/selinux/config
+sed -ri 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
+
+或者 将 SELinux 设置为 permissive 模式（相当于将其禁用）
+setenforce 0
+
 ```
 
-#### 4.修改网桥设置
+### 1.4.修改网桥设置
 
 ```
 echo "net.bridge.bridge-nf-call-ip6tables = 1" >> /etc/sysctl.d/k8s.conf
 
 echo "net.bridge.bridge-nf-call-iptables = 1" >> /etc/sysctl.d/k8s.conf
 
-echo "#关闭需虚拟内存"
-
 echo "vm.swappiness=0" >> /etc/sysctl.d/k8s.conf
 sysctl -p /etc/sysctl.d/k8s.conf
 ```
-
-    centos7添加bridge-nf-call-ip6tables出现No such file or directory
+出现No such file or directory
+```
+ centos7添加bridge-nf-call-ip6tables出现No such file or directory
 
     解决方法：
 
@@ -79,17 +75,18 @@ sysctl -p /etc/sysctl.d/k8s.conf
     bridge-nf-call-ip6tables bridge-nf-filter-vlan-tagged
     bridge-nf-call-iptables bridge-nf-pass-vlan-input-dev
  
+```
 
-#### 5.关闭swap
+### 1.5.关闭swap
 
 分别执行：
 
 ```
 sed -i "s/^.*swap.*/#&/g" /etc/fstab
 ```
-重启服务器。
 
-#### 6.配置master和minion的免密互联
+
+### 1.6.配置master和minion的免密互联
 
 分别执行：
 ```
@@ -110,27 +107,122 @@ minion上分别执行：
 ```
 ssh-copy-id master
 ```
-
-#### 7.安装docker
-
-可选择官方提供的安装方式，也可使用离线安装，使用的安装文件为：`docker-ce-17.03.2.ce-1.el7.centos.x86_64.rpm`和`docker-ce-selinux-17.03.2.ce-1.el7.centos.noarch.rpm`
-
-可手动下载离线安装包：
+### 1.7 时钟同步
 
 ```
-yum install --downloadonly --downloaddir=/home  docker-ce-17.03.2.ce docker-ce-selinux-17.03.2.ce
+# 由于是最小安装系统，需要单独安装 ntpdate
+yum install -y ntpdate
+
+# 使用阿里的时钟源，每隔一小时同步一次
+crontab -e
+# 将打开编辑，写入  
+ 0 */1 * * * ntpdate time1.aliyun.com
+# 验证
+  crontab -l
+0 */1 * * * ntpdate time1.aliyun.com
+
+# 如果是首次，可以主动同步一次
+ ntpdate time1.aliyun.com
+22 Feb 22:24:18 ntpdate[1659]: adjust time server 203.107.6.88 offset -0.005327 sec
+
+# 验证多台主机时间是否一致
+  date
+
+2021年 01月 19日 星期二 23:23:50 CST
+您在 /var/spool/mail/root 中有新邮件
+
+```
+### 1.8.1 添加网桥过滤 
+在kubernetes集群中添加网桥过滤，为了实现内核的过滤。
+
+### 添加网桥过滤及地址转发
+```
+cat > /etc/sysctl.d/k8s.conf << EOF
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+vm.swappiness = 0
+EOF
+
+加载 br_netfilter 模块
+modprobe br_netfilter
+
+查看是否加载
+[root@master ~]# modprobe br_netfilter
+[root@master ~]# lsmod | grep br_netfilter
+br_netfilter           22256  0 
+bridge                151336  1 br_netfilter
+
+加载网桥过滤配置文件
+
+[root@master ~]# sysctl -p /etc/sysctl.d/k8s.conf
+
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+vm.swappiness = 0
 ```
 
-分别执行：
+
+### 1.8.2 开启 IPVS  
+
+由于Kubernets在使用Service的过程中需要用到iptables或者是ipvs，ipvs整体上比iptables的转发效率要高，因此这里我们直接部署ipvs就可以了。  
+ **安装 ipset 及 ipvsadm **  
+```
+yum install -y ipset ipvsadm
+```
+添加需要加载的模块  
+```
+cat > /etc/sysconfig/modules/ipvs.modules << EOF
+#!/bin/bash
+modprobe -- ip_vs
+modprobe -- ip_vs_rr
+modprobe -- ip_vs_wrr
+modprobe -- ip_vs_sh
+modprobe -- nf_conntrack_ipv4
+EOF
+```
+
+### 授权、运行、检查是否加载
+```
+[root@master01 ~]# chmod +x /etc/sysconfig/modules/ipvs.modules && bash /etc/sysconfig/modules/ipvs.modules && lsmod | grep -e ip_vs -e nf_conntrack_ipv4
+nf_conntrack_ipv4      15053  0
+nf_defrag_ipv4         12729  1 nf_conntrack_ipv4
+ip_vs_sh               12688  0
+ip_vs_wrr              12697  0
+ip_vs_rr               12600  0
+ip_vs                 145497  6 ip_vs_rr,ip_vs_sh,ip_vs_wrr
+nf_conntrack          139224  2 ip_vs,nf_conntrack_ipv4
+libcrc32c              12644  3 xfs,ip_vs,nf_conntrack
 
 ```
-yum localinstall docker-ce-selinux-17.03.2.ce-1.el7.centos.noarch.rpm
-yum localinstall docker-ce-17.03.2.ce-1.el7.centos.x86_64.rpm
+
+重启服务器。
+
+## 2. docker 
+
+ ## 安装docker version:  18.09.9
+
+
+
+ 参考[docker 安装官网](https://docs.docker.com/engine/install/centos/)  
+
+查寻版本
 ```
+yum list docker-ce-cli --showduplicates | sort -r
+```
+
+###  2.1  指定版安装, 分别执行：：
+
+```
+yum install docker-ce-3:18.09.9-3.el7  docker-ce-cli-1:18.09.9-3.el7 containerd.io -y
+
+```
+
 
 Docker从1.13版本开始调整了默认的防火墙规则，禁用了iptables filter表中FOWARD链，这样会引起Kubernetes集群中跨Node的Pod无法通信，在各个Docker节点执行下面的命令：
 
-配置docker的策略
+###  2.2  配置docker的策略
 
 ```
 vi /usr/lib/systemd/system/docker.service
@@ -138,15 +230,69 @@ vi /usr/lib/systemd/system/docker.service
 ExecStartPost=/usr/sbin/iptables -P FORWARD ACCEPT
 ```
 
-启动docker：
+###  2.3 修改docker 配置文件 [参考](https://juejin.cn/post/6844904072240168973#heading-18 )
+
+```
+在 /etc/docker/daemon.json 写入如下内容
+cat > /etc/docker/daemon.json << EOF
+ { "exec-opts": ["native.cgroupdriver=systemd"]}
+EOF
+
+```
+
+### 2.4 启动docker：
  ```
 systemctl enable docker
 systemctl start docker
  ```
 
-#### 8.导入kubeadm、kubelet、kubectl
+## 3.搭建本地镜像仓库
 
-配置 k8s 源：
+由于后续需要拉取镜像，避免直接从公网拉取，在master节点上搭建本地镜像仓库（也可搭建在其他局域网服务器上），
+
+### 3.1 启动master节点的docker服务：
+```
+systemctl enable docker
+systemctl start docker
+```
+
+### 3.2 启动一个registry容器：
+```
+docker run -d -p 5000:5000 --restart=always registry 
+```
+
+### 3.3 分别修改三台服务器的docker启动配置后重启docker：
+
+```
+echo {\"insecure-registries\": [\"172.26.X.60:5000\"]} > /etc/docker/daemon.json
+systemctl daemon-reload
+systemctl restart docker
+```
+
+####  另一种方法：
+```
+vi  /usr/lib/systemd/system/docker.service
+将  --insecure-registry=192.168.5.192  加到
+
+例如  
+ExecStart=/usr/bin/dockerd -H fd:// --insecure-registry=192.168.5.192  --containerd=/run/containerd/containerd.sock
+````
+
+## 4. kus version 1.17.3  
+有三个软件需要安装：
+
+kubeadm: 初始化集群，管理集群等  
+kubelet: 用于接收 api-server 指令，对 Pod 生命周期进行管理  
+Kubectl: 集群命令管理工具  
+
+我这里三个软件的版本均为：1.17.3-0
+接下来分别在三台主机上安装这三个软件。
+
+
+
+### 4.1. 导入kubeadm、kubelet、kubectl
+
+### 配置 k8s 源： 
 
 ```
 cat <<EOF > /etc/yum.repos.d/kubernetes.repo
@@ -160,176 +306,70 @@ gpgkey=http://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg
  http://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
 EOF
 
-# 将 SELinux 设置为 permissive 模式（相当于将其禁用）
-setenforce 0
-sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
-
- yum install -y kubelet-1.19.3 kubeadm-1.19.3 kubectl-1.19.3 --disableexcludes=kubernetes
-
-systemctl enable --now kubelet
-
+```
+安装：
 ```
 
-可手动下载离线安装包：
-```
-yum install --downloadonly --downloaddir=/home/k8s196  kubelet-1.9.6-0  kubectl-1.9.6-0 kubeadm-1.9.6-0
-```
+yum list kubeadm.x86_64 --showduplicates | sort -r
 
-分别执行：
-```
-yum localinstall  *
-```
-
-#### 9.导入相关镜像
-
-需要准备镜像如下：
-```
-busybox.tar
-etcd-amd64_3.1.11.tar
-flannel-0.9.1-amd64.tar
-k8s-dns-dnsmasq-nanny-amd64_v1.14.7.tar 
-k8s-dns-kube-dns-amd64_1.14.7.tar
-k8s-dns-sidecar-amd64_1.14.7.tar
-kube-apiserver-amd64_v1.19.3.tar
-kube-controller-manager-amd64_v1.19.3.tar
-kube-proxy-amd64_v1.19.3.tar
-kubernetes-dashboard-amd64_v1.8.3.tar
-kube-scheduler-amd64_v1.19.3.tar
-pause-amd64_3.0.tar
-hub.tar
-chrome.tar
-registry.tar
-```
-
-在镜像文件目录新建文件`images.txt`,文件内容如下:
-```
-busybox.tar
-etcd-amd64_3.1.11.tar
-flannel-0.9.1-amd64.tar
-k8s-dns-dnsmasq-nanny-amd64_v1.14.7.tar 
-k8s-dns-kube-dns-amd64_1.14.7.tar
-k8s-dns-sidecar-amd64_1.14.7.tar
-kube-apiserver-amd64_v1.19.3.tar
-kube-controller-manager-amd64_v1.19.3.tar
-kube-proxy-amd64_v1.19.3.tar
-kubernetes-dashboard-amd64_v1.8.3.tar
-kube-scheduler-amd64_v1.19.3.tar
-pause-amd64_3.0.tar
-hub.tar
-chrome.tar
-registry.tar
-```
-
-
-
-在镜像文件目录执行：
-
-```
-for i in `cat images.txt ` ; do docker load < `echo $i |cut -d '/' -f 3` ; done
-# docker images
-REPOSITORY                                                   TAG                 IMAGE ID            CREATED             SIZE
-registry                                                     latest              b2b03e9146e1        4 weeks ago         33.3 MB
-registry.gitlab.com/angrytester/selenium-hub                 3.4                 13febb5e0aa9        2 months ago        293 MB
-registry.gitlab.com/angrytester/selenium-node-chrome-debug   3.4                 ea211cd77500        2 months ago        989 MB
-busybox                                                      latest              8c811b4aec35        2 months ago        1.15 MB
-gcr.io/google_containers/kube-controller-manager-amd64       v1.19.3              472b6fcfe871        4 months ago        139 MB
-gcr.io/google_containers/kube-apiserver-amd64                v1.19.3              a5c066e8c9bf        4 months ago        212 MB
-gcr.io/google_containers/kube-proxy-amd64                    v1.19.3              70e63dd90b80        4 months ago        109 MB
-gcr.io/google_containers/kube-scheduler-amd64                v1.19.3              25d7b2c6f653        4 months ago        62.9 MB
-gcr.io/google_containers/kubernetes-dashboard-amd64          v1.8.3              0c60bcf89900        5 months ago        102 MB
-gcr.io/google_containers/etcd-amd64                          3.1.11              59d36f27cceb        8 months ago        194 MB
-quay.io/coreos/flannel                                       v0.9.1-amd64        2b736d06ca4c        8 months ago        51.3 MB
-gcr.io/google_containers/k8s-dns-sidecar-amd64               1.14.7              db76ee297b85        9 months ago        42 MB
-gcr.io/google_containers/k8s-dns-kube-dns-amd64              1.14.7              5d049a8c4eec        9 months ago        50.3 MB
-gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64         1.14.7              5feec37454f4        9 months ago        40.9 MB
-gcr.io/google_containers/pause-amd64                         3.0                 99e59f495ffa        2 years ago         747 kB
-```
-
-master 上安装  
-在镜像文件目录新建文件`images—master.txt`,文件内容如下:
-```
-k8s.gcr.io/kube-apiserver:v1.19.3
-k8s.gcr.io/kube-controller-manager:v1.19.3
-k8s.gcr.io/kube-scheduler:v1.19.3
-k8s.gcr.io/kube-proxy:v1.19.3
-k8s.gcr.io/pause
+yum install -y kubeadm-1.17.3-0 kubelet-1.17.3-0 kubectl-1.17.3-0    --disableexcludes=kubernetes
 
 
 ```
-在镜像文件目录新建文件`images-work.txt`,文件内容如下:
+docker 的 cgroup driver 做了修改，这里 kubelet 需要保持一致，需修改如下配置内容：
 ```
-k8s.gcr.io/kube-proxy:v1.19.3
-k8s.gcr.io/pause
-
-
-```
-
-在镜像文件目录执行：
-
-```
-for i in `cat images-master(work).txt ` ; do docker pull  < `echo $i` ; done
-# docker images
-````
-
-
-
-#### 10.搭建本地镜像仓库
-
-由于后续需要拉取镜像，避免直接从公网拉取，在master节点上搭建本地镜像仓库（也可搭建在其他局域网服务器上），启动master节点的docker服务：
-```
-systemctl enable docker
-systemctl start docker
-```
-
-启动一个registry容器：
-```
-docker run -d -p 5000:5000 --restart=always registry 
-```
-分别修改三台服务器的docker启动配置后重启docker：
-```
-echo {\"insecure-registries\": [\"172.26.X.60:5000\"]} > /etc/docker/daemon.json
-systemctl daemon-reload
-systemctl restart docker
-```
-
-#### 11.将pause-amd64上传镜像库
-
-修改镜像tag：
-```
-docker tag gcr.io/google_containers/pause-amd64:3.0 172.26.X.60:5000/pause-amd64:3.0
-docker push 172.26.X.60:5000/pause-amd64:3.0
-```
-
-#### 12.设置进程隔离方式以及启动参数
-
-由于docker默认的隔离方式为cgroup,而k8s默认的是systemd,需要改为一致
-
-```
-sed -i 's/systemd/cgroupfs/g' /usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf
+[root@master01 ~]# cat /etc/sysconfig/kubelet
+KUBELET_EXTRA_ARGS="--cgroup-driver=systemd"
 
 ```
 
+### 4.2 相关镜像 [参考](https://juejin.cn/post/6844904072240168973)
+
+    需要准备镜像如下：
+    ```
+    k8s.gcr.io/kube-apiserver:v1.17.3
+    k8s.gcr.io/kube-controller-manager:v1.17.3
+    k8s.gcr.io/kube-scheduler:v1.17.3
+    k8s.gcr.io/etcd:3.4.3-0
+    k8s.gcr.io/coredns:1.6.5
+    k8s.gcr.io/kube-proxy:v1.17.3
+    k8s.gcr.io/pause:3.1
+
+    ```
+
+    master 上安装  
+    在镜像文件目录新建文件`images—master.txt`,文件内容如下:
+
+    ```
+    k8s.gcr.io/kube-apiserver:v1.17.3
+    k8s.gcr.io/kube-controller-manager:v1.17.3
+    k8s.gcr.io/kube-scheduler:v1.17.3
+    k8s.gcr.io/etcd:3.4.3-0
+    k8s.gcr.io/coredns:1.6.5
+    k8s.gcr.io/kube-proxy:v1.17.3
+
+    ```
+
+    在镜像文件目录新建文件`images-work.txt`,文件内容如下:
+
+    ```
+    k8s.gcr.io/kube-proxy:1.17.3
+    k8s.gcr.io/pause
+    ```
+
+    在镜像文件目录执行：
+
+    ```
+    for i in `cat images-master(work).txt ` ; do docker pull  < `echo $i` ; done
+
+    ```
+
+
+###  4.3. 初始化集群
 
 ```
-echo Environment=\"KUBELET_SWAP_ARGS=--fail-swap-on=false\" >> /usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf
-echo Environment=\"KUBELET_INFRA_IMAGE=--pod-infra-container-image=k8s.gcr.io/pause\" >> /usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf
-```
-
-#### 13.启动K8S
-
-分别执行:
-
-```
-systemctl daemon-reload
-systemctl enable kubelet
-systemctl start kubelet
-```
-
-### 初始化集群
-
-```
-kubeadm init --kubernetes-version=v1.19.3 --pod-network-cidr=10.244.0.0/16 --token-ttl=0
-kubeadm init --kubernetes-version=v1.19.3  --token-ttl=0
+kubeadm init --kubernetes-version=1.17.3 --pod-network-cidr=10.244.0.0/16 --token-ttl=0
+kubeadm init --kubernetes-version=1.17.3  --token-ttl=0
 ```
 
 `--token-ttl=0`表示token永不过期
